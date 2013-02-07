@@ -5,6 +5,7 @@ var store = voxelStorage({onReady: getChunks})
 function getChunks() {
   store.loadChunks(function(err, chunks) {
     if (err) return console.error(err)
+    console.log('gc', chunks)
     if (chunks.length === 0) return createWorld()
     return loadWorld(chunks)
   })
@@ -13,7 +14,8 @@ function getChunks() {
 function loadWorld(chunks) {
   var chunkMap = {}
   chunks.map(function(chunk) {
-    chunkMap[chunk.value.position.join('|')] = chunk.value
+    var pos = [chunk.position[0], chunk.position[1], chunk.position[2]]
+    chunkMap[pos.join('|')] = chunk
   })
   createWorld({generateVoxelChunk: function chunkLoader(low, high, x, y, z) {
     var pos = [x, y, z].join('|')
@@ -24,8 +26,11 @@ function loadWorld(chunks) {
 function createWorld(opts) {
   window.game = createGame(opts)
   
-  var chunks = Object.keys(game.voxels.chunks).map(function(key){ return game.voxels.chunks[key]})
-  store.storeChunks(chunks)
+  var chunks = Object.keys(game.voxels.chunks).map(function(key){ return game.voxels.chunks[key] })
+
+  store.storeChunks(chunks, function(err) {
+    console.log('cb', err)
+  })
 
   game.appendTo('#container')
 

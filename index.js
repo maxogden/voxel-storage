@@ -1,6 +1,9 @@
+if (process.browser) window.Buffer = require('buffer').Buffer
+
 var events = require('events'),
     util = require('util'),
-    IDBStore = require('idb-wrapper');
+    IDBStore = require('idb-wrapper'),
+    crunch = require("voxel-crunch");
 
 module.exports = function(opts) {
   return new Storage(opts)
@@ -51,7 +54,15 @@ util.inherits(Storage, events.EventEmitter);
 */
 
 Storage.prototype.loadChunk = function(id, cb) {
-    this._load('chunk', id, cb);
+    var self = this
+    this._load('chunk', id, function(err, chunk) {
+        if (err) return cb(err)
+        self._decodeChunk(chunk, function(err, crunched) {
+            if (err) return cb(err)
+            chunk.voxels = crunched
+            cb(false, chunk)        
+        })
+    });
 };
 
 Storage.prototype.loadChunks = function(ids, cb) {
@@ -91,11 +102,24 @@ Storage.prototype.loadGame = function(cb) {
 */
 
 Storage.prototype.storeChunk = function(chunk, cb) {
-    this._store('chunk', chunk.position.join('|'), chunk, cb);
+    this._encodeChunk(chunk, function(err, key, encoded) {
+        if (err) return cb(err)
+        this._store('chunk', key, encoded, cb)
+    })
 };
 
 Storage.prototype.storeChunks = function(chunks, cb) {
-    this._storeEach('chunk', chunks, cb);
+    var self = this
+    var i = chunks.length
+    var encodedChunks = []
+    chunks.forEach(function(chunk) {
+        self._encodeChunk(chunk, function(err, key, encoded) {
+            encoded.position.push(chunk.voxels.length)
+            encodedChunks.push(encoded)
+            if (--i !== 0) return
+            self._storeEach('chunk', encodedChunks, cb)
+        })
+    })
 };
 
 Storage.prototype.storeItem = function(item, cb) {
@@ -157,8 +181,6 @@ Storage.prototype._loadEach = function(type, ids, cb) {
     var self = this,
         res = [];
 
-    ids = ids || [];
-
     //return all entries of a certain type
     this.store.iterate(
         function(data, cursor, trans) {
@@ -168,6 +190,14 @@ Storage.prototype._loadEach = function(type, ids, cb) {
                 if(cb) cb(null, res);
             } else {
                 if(!ids || ids.indexOf(data.id) !== -1) {
+                    if (type === "chunk") {
+                        self._decodeChunk(data.value, function(err, uncrunched) {
+                            data.value.voxels = uncrunched
+                            res.push(data.value);
+                            self.emit(type + 'Loaded', data.value);
+                        })
+                        return
+                    }
                     res.push(data.value);
                     self.emit(type + 'Loaded', data.value);
                 }
@@ -200,6 +230,24 @@ Storage.prototype._store = function(type, id, value, cb) {
     );
 };
 
+Storage.prototype._encodeChunk = function(chunk, cb) {
+  crunch.encode(chunk.voxels, function(err, crunched) {
+      if (err) return cb(err)
+      var crunchedArray = new Int8Array(crunched)
+      var chunkCopy = {position: chunk.position, dims: chunk.dims, voxels: crunchedArray}
+      var key = chunkCopy.position.join('|')
+      key += '|' + chunk.voxels.length
+      cb(false, key, chunkCopy)
+  })
+}
+
+Storage.prototype._decodeChunk = function(chunk, cb) {
+    crunch.decode(new Buffer(chunk.voxels), chunk.position[3], function(err, uncrunched) {
+        if (err) return cb(err)
+        cb(false, uncrunched)
+    })    
+};
+
 Storage.prototype._storeEach = function(type, values, cb) {
     var self = this
     var actions = [];
@@ -213,7 +261,6 @@ Storage.prototype._storeEach = function(type, values, cb) {
             }
         });
     }
-
     this.store.batch(
         actions,
         function() {
